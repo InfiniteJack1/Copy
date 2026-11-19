@@ -1,6 +1,6 @@
 # Channel Copy – Heroku
 
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME)
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/InfiniteJack1/Copy)
 (upar wale link me `YOUR_GITHUB_USERNAME/YOUR_REPO_NAME` apne GitHub repo se badal do)
 
 Old channel ke saare audio/video ko new channel me copy karta hai (server-side, download/upload nahi).
