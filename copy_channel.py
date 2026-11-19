@@ -19,7 +19,7 @@ import sys
 import random
 
 from pyrogram import Client, raw
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, InternalServerError
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
@@ -37,7 +37,7 @@ def _chat(value: str):
 
 OLD_CHANNEL = _chat(os.environ["OLD_CHANNEL"])
 NEW_CHANNEL = _chat(os.environ["NEW_CHANNEL"])
-BATCH = max(1, min(int(os.getenv("BATCH", "100")), 100))   # copy_messages ek baar me max 100
+BATCH = max(1, min(int(os.getenv("BATCH", "50")), 100))   # copy_messages ek baar me max 100
 DELAY = float(os.getenv("DELAY", "4"))                     # har batch ke baad seconds (kam mat karo)
 SCAN = 200                                                 # ek baar me kitne message ids check karne hain
 
@@ -121,13 +121,26 @@ async def copy_batch(app, ids):
 
 
 async def flood_safe(coro_fn):
-    """FloodWait aaye to ruk ke dobara try karo."""
+    """FloodWait aur Telegram ke temporary 500/network errors par ruk ke dobara try karo."""
+    tries = 0
     while True:
         try:
             return await coro_fn()
         except FloodWait as e:
             log(f"FloodWait: {e.value}s ruk raha hoon...")
             await asyncio.sleep(e.value + 2)
+        except Exception as e:
+            msg = str(e).upper()
+            temporary = (
+                isinstance(e, (InternalServerError, TimeoutError, ConnectionError, OSError))
+                or "WORKER_BUSY" in msg or "[500" in msg or "TIMEOUT" in msg
+            )
+            tries += 1
+            if not temporary or tries > 30:
+                raise
+            wait = min(30 * tries, 300)
+            log(f"Telegram temporary error ({str(e)[:80]}). {wait}s baad dobara try ({tries}/30)...")
+            await asyncio.sleep(wait)
 
 
 async def run():
@@ -149,6 +162,8 @@ async def run():
             log("Old channel khaali hai ya access nahi hai.")
             return
         log(f"Old channel last message id: {top}. Resume from id {last_id + 1}. Pehle copy hue: {copied}")
+
+        await notify(app, f"▶️ Channel copy start/resume hua. Id {last_id + 1} se shuru, total {top} tak. Pehle copy hue: {copied}")
 
         pending = []   # copy hone wale ids, batch bharne tak jama karte hain
         pos = last_id
