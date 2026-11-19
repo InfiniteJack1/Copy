@@ -1,0 +1,49 @@
+{
+  "name": "channel-copy",
+  "description": "Telegram old channel ke audio/video ko new channel me copy karta hai (worker dyno).",
+  "keywords": ["telegram", "pyrogram", "channel", "copy"],
+  "buildpacks": [{ "url": "heroku/python" }],
+  "formation": {
+    "worker": { "quantity": 1, "size": "eco" }
+  },
+  "env": {
+    "API_ID": {
+      "description": "my.telegram.org se API ID (number).",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "my.telegram.org se API HASH.",
+      "required": true
+    },
+    "SESSION_STRING": {
+      "description": "generate_session.py ko apne PC par chala ke mili lambi string. Kisi ko mat dena.",
+      "required": true
+    },
+    "OLD_CHANNEL": {
+      "description": "Purane channel ka id (jaise -1001111111111) ya @username.",
+      "required": true
+    },
+    "NEW_CHANNEL": {
+      "description": "Naye channel ka id (jaise -1002222222222). Aap usme admin hone chahiye.",
+      "required": true
+    },
+    "BATCH": {
+      "description": "Ek baar me kitne copy karne hain (max 100).",
+      "value": "100",
+      "required": false
+    },
+    "DELAY": {
+      "description": "Har batch ke baad kitne seconds rukna hai (kam mat karo, ban ka darr).",
+      "value": "4",
+      "required": false
+    },
+    "BOT_TOKEN": {
+      "description": "Optional: phone par notification ke liye bot token (@BotFather).",
+      "required": false
+    },
+    "NOTIFY_USER_ID": {
+      "description": "Optional: aapka Telegram user id (@userinfobot), bot se notification ke liye.",
+      "required": false
+    }
+  }
+}
