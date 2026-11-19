@@ -16,7 +16,9 @@ import asyncio
 import os
 import sys
 
-from pyrogram import Client
+import random
+
+from pyrogram import Client, raw
 from pyrogram.errors import FloodWait
 
 API_ID = int(os.environ["API_ID"])
@@ -105,6 +107,19 @@ async def notify(app, text):
             log(f"Bot notify fail: {e}")
 
 
+async def copy_batch(app, ids):
+    """Server-side copy (drop_author=True => 'Forwarded from' nahi dikhta), ek baar me 100 tak."""
+    await app.invoke(
+        raw.functions.messages.ForwardMessages(
+            from_peer=await app.resolve_peer(OLD_CHANNEL),
+            id=ids,
+            random_id=[random.getrandbits(63) for _ in ids],
+            to_peer=await app.resolve_peer(NEW_CHANNEL),
+            drop_author=True,
+        )
+    )
+
+
 async def flood_safe(coro_fn):
     """FloodWait aaye to ruk ke dobara try karo."""
     while True:
@@ -142,7 +157,7 @@ async def run():
             nonlocal pending, copied
             while pending:
                 chunk, pending = pending[:BATCH], pending[BATCH:]
-                await flood_safe(lambda: app.copy_messages(NEW_CHANNEL, OLD_CHANNEL, chunk))
+                await flood_safe(lambda: copy_batch(app, chunk))
                 copied += len(chunk)
                 await asyncio.sleep(DELAY)
             await progress.save(upto, copied)
