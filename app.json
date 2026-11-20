@@ -1,10 +1,22 @@
 {
   "name": "channel-copy",
   "description": "Telegram old channel ke audio/video ko new channel me copy karta hai (worker dyno).",
-  "keywords": ["telegram", "pyrogram", "channel", "copy"],
-  "buildpacks": [{ "url": "heroku/python" }],
+  "keywords": [
+    "telegram",
+    "pyrogram",
+    "channel",
+    "copy"
+  ],
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
   "formation": {
-    "worker": { "quantity": 1, "size": "eco" }
+    "worker": {
+      "quantity": 1,
+      "size": "eco"
+    }
   },
   "env": {
     "API_ID": {
@@ -16,8 +28,8 @@
       "required": true
     },
     "SESSION_STRING": {
-      "description": "generate_session.py ko apne PC par chala ke mili lambi string. Kisi ko mat dena.",
-      "required": true
+      "description": "Ek account ke liye: generate_session.py wali string. Kai accounts chahiye to khaali chhodo aur neeche SESSION_STRINGS bharo.",
+      "required": false
     },
     "OLD_CHANNEL": {
       "description": "Purane channel ka id (jaise -1001111111111) ya @username.",
@@ -43,6 +55,10 @@
     },
     "NOTIFY_USER_ID": {
       "description": "Optional: aapka Telegram user id (@userinfobot), bot se notification ke liye.",
+      "required": false
+    },
+    "SESSION_STRINGS": {
+      "description": "Optional, tez kaam ke liye 2-5 accounts: har account ki session string comma (,) se alag karke. Har account old channel ka member aur new channel ka admin ho.",
       "required": false
     }
   }
