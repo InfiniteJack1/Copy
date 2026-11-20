@@ -17,13 +17,16 @@ import os
 import sys
 
 import random
+from contextlib import AsyncExitStack
 
 from pyrogram import Client, raw
 from pyrogram.errors import FloodWait, InternalServerError
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
-SESSION_STRING = os.environ["SESSION_STRING"]
+# Ek ya zyada accounts: SESSION_STRINGS = "string1,string2,string3" (comma se alag) ya sirf SESSION_STRING
+_raw_sessions = os.getenv("SESSION_STRINGS") or os.environ["SESSION_STRING"]
+SESSION_LIST = [x.strip() for x in _raw_sessions.replace("\n", ",").split(",") if x.strip()]
 
 
 def _chat(value: str):
@@ -59,24 +62,66 @@ def wanted(m):
     return bool(m.document and (m.document.mime_type or "").startswith(("audio/", "video/")))
 
 
+def media_uid(m):
+    """File ki pehchaan. Server-side copy me same file ki file_unique_id wahi rehti hai."""
+    for obj in (m.audio, m.video, m.document):
+        if obj is not None:
+            return obj.file_unique_id
+    return None
+
+
+async def existing_in_new(app):
+    """New channel me pehle se maujood audio/video ki unique ids."""
+    uids = set()
+    n = 0
+    async for m in app.get_chat_history(NEW_CHANNEL):
+        n += 1
+        if wanted(m):
+            uids.add(media_uid(m))
+        if n % 2000 == 0:
+            log(f"  New channel scan: {n} messages dekhe, {len(uids)} files mili...")
+    return uids
+
+
 class Progress:
     """Saved Messages me ek message: 'CHANNEL_COPY_PROGRESS <old> <new> <last_id> <copied>'."""
 
-    def __init__(self, app):
+    def __init__(self, app, worker=0, total=1):
         self.app = app
         self.msg_id = None
         self.last_id = 0
         self.copied = 0
         self.key = f"{TAG} {OLD_CHANNEL} {NEW_CHANNEL}"
+        if total > 1:
+            self.key += f" w{worker}/{total}"
+
+    def _match(self, m):
+        if not m.text or not m.text.startswith(self.key):
+            return False
+        return len(m.text.split()) == len(self.key.split()) + 2   # key + last_id + copied
 
     async def load(self):
-        async for m in self.app.get_chat_history("me", limit=100):
-            if m.text and m.text.startswith(self.key):
-                parts = m.text.split()
-                self.msg_id = m.id
-                self.last_id = int(parts[-2])
-                self.copied = int(parts[-1])
-                return
+        found = None
+        try:
+            async for m in self.app.search_messages("me", query=TAG, limit=20):
+                if self._match(m):
+                    found = m
+                    break
+        except Exception as e:
+            log(f"Progress search fail: {e}")
+        if found is None:
+            async for m in self.app.get_chat_history("me", limit=3000):
+                if self._match(m):
+                    found = m
+                    break
+        if found is not None:
+            parts = found.text.split()
+            self.msg_id = found.id
+            self.last_id = int(parts[-2])
+            self.copied = int(parts[-1])
+            log(f"Progress mila: id {self.last_id}, copied {self.copied}")
+        else:
+            log("Progress message nahi mila, shuru se start.")
 
     async def save(self, last_id, copied):
         self.last_id, self.copied = last_id, copied
@@ -136,65 +181,99 @@ async def flood_safe(coro_fn):
                 or "WORKER_BUSY" in msg or "[500" in msg or "TIMEOUT" in msg
             )
             tries += 1
-            if not temporary or tries > 30:
+            if not temporary or tries > 200:
                 raise
             wait = min(30 * tries, 300)
-            log(f"Telegram temporary error ({str(e)[:80]}). {wait}s baad dobara try ({tries}/30)...")
+            log(f"Telegram temporary error ({str(e)[:80]}). {wait}s baad dobara try ({tries}/200)...")
             await asyncio.sleep(wait)
 
 
-async def run():
-    app = Client("copier", api_id=API_ID, api_hash=API_HASH,
-                 session_string=SESSION_STRING, in_memory=True)
-    async with app:
-        # fresh session me channels ka access cache khaali hota hai, dialogs load karke bharo
-        async for _ in app.get_dialogs():
-            pass
+async def worker(i, total, app, top, existing, notifier):
+    """Account i: old channel ke blocks (SCAN ids) me se har total-wa block process karta hai."""
+    tag = f"[acc{i + 1}/{total}]"
+    progress = Progress(app, i, total)
+    await progress.load()
+    copied = progress.copied
+    last_id = progress.last_id
+    nblocks = (top + SCAN - 1) // SCAN
+    b = nblocks if last_id >= top else last_id // SCAN
+    while b < nblocks and b % total != i:
+        b += 1
+    log(f"{tag} resume: id {last_id + 1} ke baad, block {b}/{nblocks}, pehle copy hue {copied}")
 
-        progress = Progress(app)
-        await progress.load()
-        last_id, copied = progress.last_id, progress.copied
-
-        top = None
-        async for m in app.get_chat_history(OLD_CHANNEL, limit=1):
-            top = m.id
-        if top is None:
-            log("Old channel khaali hai ya access nahi hai.")
-            return
-        log(f"Old channel last message id: {top}. Resume from id {last_id + 1}. Pehle copy hue: {copied}")
-
-        await notify(app, f"▶️ Channel copy start/resume hua. Id {last_id + 1} se shuru, total {top} tak. Pehle copy hue: {copied}")
-
-        pending = []   # copy hone wale ids, batch bharne tak jama karte hain
-        pos = last_id
-
-        async def flush(upto):
-            nonlocal pending, copied
+    try:
+        while b < nblocks:
+            lo, hi = b * SCAN + 1, min((b + 1) * SCAN, top)
+            ids = list(range(lo, hi + 1))
+            msgs = await flood_safe(lambda: app.get_messages(OLD_CHANNEL, ids))
+            pending = []
+            for m in msgs:
+                if wanted(m):
+                    uid = media_uid(m)
+                    if uid in existing:
+                        continue          # pehle se new channel me hai ya old me duplicate
+                    existing.add(uid)
+                    pending.append(m.id)
             while pending:
                 chunk, pending = pending[:BATCH], pending[BATCH:]
                 await flood_safe(lambda: copy_batch(app, chunk))
                 copied += len(chunk)
                 await asyncio.sleep(DELAY)
-            await progress.save(upto, copied)
-            log(f"id {upto}/{top} dekh liye | {copied} songs/videos copy ho gaye")
+            await progress.save(hi, copied)
+            log(f"{tag} id {hi}/{top} dekh liye | {copied} copy ho gaye")
+            b += total
+    except Exception as e:
+        if "RESTRICTED" in str(e).upper() or "FORWARD" in str(e).upper():
+            log(f"{tag} ❌ Channel par 'Restrict saving content' laga hai, copy nahi ho sakta.")
+        log(f"{tag} Error: {e}")
+        await notify(notifier, f"❌ Channel copy ruk gaya ({tag}): {e}")
+        raise
+    return copied
 
-        while pos < top:
-            ids = list(range(pos + 1, min(pos + SCAN, top) + 1))
-            msgs = await flood_safe(lambda: app.get_messages(OLD_CHANNEL, ids))
-            pending += [m.id for m in msgs if wanted(m)]
-            pos = ids[-1]
-            if len(pending) >= BATCH or pos >= top:
-                try:
-                    await flush(pos)
-                except Exception as e:
-                    if "RESTRICTED" in str(e).upper() or "FORWARD" in str(e).upper():
-                        log("❌ Channel par 'Restrict saving content' laga hai, copy nahi ho sakta.")
-                    log(f"Error: {e}")
-                    await notify(app, f"❌ Channel copy ruk gaya: {e}")
-                    raise
 
-        log(f"✅ Sab copy ho gaya! Total: {copied}")
-        await notify(app, f"✅ Channel copy complete! {copied} audio/video copy ho gaye.")
+async def run():
+    total = len(SESSION_LIST)
+    async with AsyncExitStack() as stack:
+        apps = []
+        for n, sess in enumerate(SESSION_LIST):
+            app = Client(f"copier{n}", api_id=API_ID, api_hash=API_HASH,
+                         session_string=sess, in_memory=True)
+            apps.append(await stack.enter_async_context(app))
+
+        async def warm(app):
+            # fresh session me channels ka access cache khaali hota hai, dialogs load karke bharo
+            async for _ in app.get_dialogs():
+                pass
+        await asyncio.gather(*(warm(a) for a in apps))
+        log(f"{total} account(s) login ho gaye.")
+
+        existing = set()
+        if os.getenv("SKIP_EXISTING", "1") != "0":
+            log("New channel me pehle se maujood files check ho rahi hain...")
+            existing = await existing_in_new(apps[0])
+            log(f"New channel me pehle se {len(existing)} audio/video hain, ye skip hongi.")
+
+        top = None
+        async for m in apps[0].get_chat_history(OLD_CHANNEL, limit=1):
+            top = m.id
+        if top is None:
+            log("Old channel khaali hai ya access nahi hai.")
+            return
+
+        msg = f"▶️ Channel copy start/resume hua. {total} account, total id {top}. New channel me pehle se: {len(existing)} files"
+        log(msg)
+        await notify(apps[0], msg)
+
+        results = await asyncio.gather(
+            *(worker(i, total, a, top, existing, apps[0]) for i, a in enumerate(apps)),
+            return_exceptions=True,
+        )
+        errors = [r for r in results if isinstance(r, Exception)]
+        if errors:
+            raise errors[0]
+        done = sum(results)
+        log(f"✅ Sab copy ho gaya! Is run me total: {done}")
+        await notify(apps[0], f"✅ Channel copy complete! {done} audio/video copy hue (is run me).")
 
 
 def main():
