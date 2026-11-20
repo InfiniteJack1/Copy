@@ -17,6 +17,7 @@ import os
 import sys
 
 import random
+import re
 from contextlib import AsyncExitStack
 
 from pyrogram import Client, raw
@@ -24,9 +25,25 @@ from pyrogram.errors import FloodWait, InternalServerError
 
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
-# Ek ya zyada accounts: SESSION_STRINGS = "string1,string2,string3" (comma se alag) ya sirf SESSION_STRING
-_raw_sessions = os.getenv("SESSION_STRINGS") or os.environ["SESSION_STRING"]
-SESSION_LIST = [x.strip() for x in _raw_sessions.replace("\n", ",").split(",") if x.strip()]
+# Accounts: ye sab Config Vars padhe jaate hain (jo bhi set ho):
+#   SESSION_STRING, SESSION_STRING1, SESSION_STRING2, ... SESSION_STRING30
+#   aur SESSION_STRINGS (comma/space se alag kai strings)
+def _load_sessions():
+    raw = []
+    for name in ["SESSION_STRING"] + [f"SESSION_STRING{n}" for n in range(1, 31)] + ["SESSION_STRINGS"]:
+        v = os.getenv(name)
+        if v:
+            raw += [x for x in re.split(r"[,\s]+", v.strip().strip("\"'")) if x]
+    out = []
+    for x in raw:
+        if x not in out:      # same string do baar ho to ek hi baar
+            out.append(x)
+    if not out:
+        raise SystemExit("Koi SESSION_STRING set nahi hai (SESSION_STRING, SESSION_STRING1, ...)")
+    return out
+
+
+SESSION_LIST = _load_sessions()
 
 
 def _chat(value: str):
